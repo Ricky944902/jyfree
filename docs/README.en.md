@@ -18,7 +18,7 @@
 | 02 | [编译指南](02-编译指南.md) · [EN](02-build-guide.en.md) | Dependencies, building, cross-compiling, arch requirements, install, build problems | ✅ |
 | 03 | [使用手册](03-使用手册.md) · [EN](03-user-guide.en.md) | Options, commands, feature bits, GUI, systemd, typical workflows | ✅ |
 | 04 | [排错手册](04-排错手册.md) · [EN](04-troubleshooting.en.md) | Symptom → cause → fix, collecting a full report | ✅ |
-| 05 | [GitHub 发布指南](05-GitHub发布指南.md) · [EN](05-github-upload.en.md) | **What to upload / what not to**, publishing steps, legal risks | ✅ |
+
 
 ---
 
