@@ -33,6 +33,7 @@ all in real time.
 > ⚠️ **Disclaimer** — For authorized local research and educational use only.
 > Mythware is a registered trademark of Guangzhou Shirui Software Technology
 > Co., Ltd. This project is not affiliated with or endorsed by them.
+> Intended for authorized study of the underlying principles only.
 
 ---
 
