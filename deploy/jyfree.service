@@ -1,0 +1,17 @@
+[Unit]
+Description=jyfree - 极域电子教室绕过工具
+Documentation=man:jyfree(1)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/jyfree
+Restart=always
+RestartSec=3
+
+# 必须与 Student 同 UID 运行 (ptrace 注入要求), 不需要 root
+# 通过 XDG_RUNTIME_DIR 继承用户会话环境
+
+[Install]
+WantedBy=default.target

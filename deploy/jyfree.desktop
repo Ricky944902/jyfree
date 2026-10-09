@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=极域绕过工具 (jyfree)
+Name[en]=jyfree - JiYu Classroom Bypass
+Comment=拦截极域电子教室的锁屏/监视/远程控制
+Comment[en]=Bypass lock/monitor/remote-control of Mythware classroom software
+Exec=/usr/local/bin/jyfree-gui
+Icon=security
+Terminal=false
+Type=Application
+Categories=Utility;System;
+Keywords=mythware;jiyu;classroom;bypass;
+StartupNotify=true
+X-GNOME-Autostart-enabled=true

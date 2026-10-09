@@ -1,0 +1,301 @@
+# 02 · Build Guide
+
+**[简体中文](02-编译指南.md)** · **[English](02-build-guide.en.md)**
+
+## 1. Dependencies
+
+| Dependency | Purpose | Required |
+|---|---|---|
+| `gcc` ≥ 6 / `make` | build | ✅ |
+| `libx11-dev` | the `jyfree-gui` graphical build | GUI only |
+| `libpthread` `libdl` `librt` | ptrace / dlopen / shm_open | ✅ |
+| aarch64 cross toolchain | building aarch64 from x86 | when cross-compiling |
+
+### Installing dependencies
+
+**UOS / Debian based:**
+
+```bash
+sudo apt update
+sudo apt install build-essential libx11-dev
+```
+
+**Cross toolchain:**
+
+```bash
+sudo apt install gcc-aarch64-linux-gnu
+```
+
+**Fedora / RHEL:**
+
+```bash
+sudo dnf install gcc make libX11-devel
+sudo dnf install gcc-aarch64-linux-gnu
+```
+
+---
+
+## 2. One-Shot Build
+
+```bash
+./scripts/build.sh            # native build + dependency check + arch check
+./scripts/build.sh --check    # environment check only, no build
+./scripts/build.sh --debug    # debug build (-O0 -g3 -DDEBUG)
+./scripts/build.sh --install  # build and install into ~/.local
+./scripts/build.sh --clean    # clean
+./scripts/build.sh --cross    # cross-compile for aarch64
+./scripts/build.sh --help     # help
+```
+
+---
+
+## 3. Building via Makefile Directly
+
+```bash
+make              # everything: jyfree + jyfree-gui + libjyfree.so
+make cli          # CLI only
+make gui          # GUI only
+make payload      # payload only
+make debug        # debug build
+make clean        # remove intermediates (obj/)
+make distclean    # also remove bin/
+make arch-check   # verify architecture
+make install      # install
+make help         # list every target
+```
+
+Outputs:
+
+```
+bin/jyfree          CLI
+bin/jyfree-gui      GUI
+bin/libjyfree.so    payload (must sit next to jyfree)
+```
+
+Intermediates go to `obj/`.
+
+---
+
+## 4. Cross-Compiling (building aarch64 on x86)
+
+**Via script**
+
+```bash
+./scripts/build.sh --cross
+./scripts/build.sh --cross aarch64-none-linux-gnu-
+```
+
+**Via Makefile**
+
+```bash
+make ARCH=aarch64 CROSS=aarch64-linux-gnu-
+```
+
+Copy the artifacts to the target:
+
+```bash
+scp bin/* user@target:/usr/local/bin/
+```
+
+---
+
+## 5. Architecture Requirement (important)
+
+> **The inline hook addresses in the payload are aarch64-only.**
+
+`Student` is an **ET_EXEC non-PIE** binary, so addresses from `nm` are the
+runtime addresses, for example:
+
+```
+ShowLockScreen  @ 0x441ed4
+StartMonitorPassive @ 0x44e670
+```
+
+jyfree writes these addresses straight into the payload's patches. Therefore:
+
+| Build arch | Result |
+|---|---|
+| aarch64 | ✅ inline hooks **and** GOT hooks both work |
+| x86_64 etc. | ❌ GOT hooks still work; inline hooks write to unrelated addresses (may crash) |
+
+Building on a non-aarch64 host is **only useful for verifying that the code
+compiles**. It must not be run.
+
+`make arch-check` and `./scripts/build.sh --check` will warn you.
+
+---
+
+## 6. Build Variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ARCH` | `$(uname -m)` | target architecture |
+| `CROSS` | empty | cross toolchain prefix |
+| `OPT` | `-O2` | optimization level |
+| `PREFIX` | `/usr/local` | install prefix |
+
+Examples:
+
+```bash
+make OPT="-O0 -g3 -fsanitize=address" cli     # ASan debug build
+make PREFIX="$HOME/.local" install             # install into the home dir
+make OPT="-O3 -march=armv8-a" cli             # tune for ARMv8
+```
+
+### The payload's special flags
+
+The payload uses its own `PAYLOAD_CFLAGS`:
+
+```
+-Wall -Wextra -O2 -Iinclude -fPIC -DJIYU_PAYLOAD_BUILD=1
+```
+
+- `-fPIC` — it gets `dlopen`ed into another process, so it must be
+  position-independent
+- `-DJIYU_PAYLOAD_BUILD=1` — enables the payload's internal logging.
+  The payload runs *inside* Student, so it **cannot** depend on the
+  controller's `jiyu_debug_*` symbols; otherwise `dlopen` fails with an
+  unresolved-symbol error.
+
+---
+
+## 7. Installing
+
+```bash
+sudo make install                        # /usr/local/bin
+make install PREFIX="$HOME/.local"       # user directory
+./scripts/install.sh                     # interactive (auto-detects root)
+```
+
+Installed files:
+
+```
+$PREFIX/bin/jyfree
+$PREFIX/bin/jyfree-gui
+$PREFIX/bin/libjyfree.so      ← must be in the same directory as jyfree
+```
+
+> `payload_path()` search order:
+> the directory of `/proc/self/exe` → `/usr/local/lib/` → `/usr/lib/` → `./`
+> When placing files manually, keep `jyfree` and `libjyfree.so` together.
+
+### Desktop & systemd Integration
+
+`scripts/install.sh` also installs:
+
+```
+~/.local/share/applications/jyfree.desktop   menu entry
+~/.config/systemd/user/jyfree.service        user-level service
+```
+
+Enable auto-start:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable jyfree.service
+```
+
+---
+
+## 8. Common Build Problems
+
+### `X11/Xlib.h: No such file or directory`
+
+```bash
+sudo apt install libx11-dev
+```
+
+Or skip the GUI entirely:
+
+```bash
+make cli payload
+```
+
+### `'shm_open' undeclared`
+
+Missing `librt`. glibc ≥ 2.34 merged it into libc, but older versions need it
+linked explicitly:
+
+```bash
+# verify LIBS contains -lrt in the Makefile
+LIBS := -lpthread -ldl -lrt
+```
+
+### Errors about `brk` / `FORBIDDEN` instructions
+
+The payload's patch instructions are **hand-written machine code**, not compiler
+syntax:
+
+```c
+uint32_t patch[4] = { 0x58000050, 0xd61f0200, ... };
+```
+
+### The payload compiles but injection fails
+
+See [`04-troubleshooting.en.md`](04-troubleshooting.en.md).
+
+---
+
+## 9. Post-Build Self-Check
+
+```bash
+# 1. Verify architecture
+file bin/jyfree bin/libjyfree.so
+
+# 2. Confirm the payload can be located
+./bin/jyfree --status
+
+# 3. Confirm the CLI runs
+./bin/jyfree --help
+./bin/jyfree --process      # requires Mythware to be running
+
+# 4. Confirm the payload log gets written
+./bin/jyfree                 # after injecting
+cat /tmp/jyfree-payload.log
+```
+
+---
+
+## 10. Source File Map
+
+```
+include/
+  jiyu.h            controller public API (every declaration)
+  payload_state.h   ★ shared by both sides: bits / symbol addresses / shm struct
+  gui.h             Xlib GUI structures and API
+
+src/
+  main.c            CLI entry, command table, argument parsing
+  gui_main.c        GUI entry
+  gui.c             Xlib implementation (window/buttons/log window/settings)
+  inject.c          ptrace engine + shared memory + watchdog
+  hook_payload.c    payload (built into libjyfree.so)
+  process.c         /proc scanning for Student, systemd integration
+  utils.c           config read/write, logging, debug output
+```
+
+> **Removed in v2.1**: `heartbeat.c` (`/proc/pid/net/*` is network-namespace
+> scoped, so it cannot tell you what a *process* listens on), `screen.c`,
+> `input.c`, `netfilter.c` — all v1 leftovers. Their functionality is now
+> provided by feature bits plus the payload hooks; keeping them would mislead
+> readers into thinking those features work.
+
+> **When editing `payload_state.h`, keep both sides in sync** — it is included
+> by both the controller and the payload; a mismatched struct layout corrupts
+> memory.
+
+---
+
+For authorized local research and educational use only.
+---
+
+<div align="center">
+
+**[⬆ Main documentation](../README.en.md)** · **[中文主文档 →](../README.md)**
+**[Documentation index](README.en.md)** · **[中文索引 →](README.md)**
+
+For authorized local research and educational use only.
+Mythware is a registered trademark of Guangzhou Shirui Software Technology
+Co., Ltd. This project is not affiliated with or endorsed by them.
+
+</div>
