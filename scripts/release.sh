@@ -77,18 +77,115 @@ echo "  资产:"
 ls -lh "$TARBALL" "$SHAFILE" | awk '{print "    "$5"  "$9}'
 echo ""
 
-# ---------- 网络检查 ----------
-echo -e "${CYAN}[检查网络]${NC}"
-if ! curl -sS --max-time 10 -o /dev/null "https://api.github.com" 2>/dev/null; then
-    echo -e "${RED}  无法访问 api.github.com${NC}"
-    echo ""
-    echo "  可能原因:"
-    echo "    - 网络不通 / 需要代理"
-    echo "    - 系统时间偏差过大 (GitHub API 对时间敏感)"
-    echo ""
-    exit 1
+# ---------- TLS / 网络检查 ----------
+# 背景: Windows 上常跑着 HTTPS 中间人工具 (如 Steam++/Watt Toolkit,
+#       Clash 等), 它们用自己的根证书签发证书。git 可以切成 schannel
+#       (走 Windows 证书库) 从而信任它们, 但 curl 用自带的 OpenSSL
+#       CA bundle, 不认识这些根证书 → "unable to get local issuer"。
+#       这里自动探测并处理, 不需要用户手工导出。
+
+echo -e "${CYAN}[检查网络与 TLS]${NC}"
+
+CURL_CA_OPT=()          # 最终传给 curl 的证书参数
+CA_FILE=""             # 导出的 PEM 路径 (若有)
+
+# 导出 Windows 证书库里的非系统根证书 (排除 Microsoft 自带的一大批),
+# 只保留可能用于 HTTPS 中间人的那些 (按 Subject 关键字筛选)。
+export_mitm_ca() {
+    local out="$1"
+    local ps_script='
+$ErrorActionPreference = "SilentlyContinue"
+$pat = "SteamTools|BeyondDimension|Clash|Mihomo|Verge|Watt|Proxy|Mitm|Burp|Fiddler|Charles|Netskope|Zscaler|cisco|Palo Alto|Fortinet|Sophos|Kaspersky|ESET|Avast|AVG|Malwarebytes|Comodo|Sectigo|RapidSSL|Symantec|Thawte|GeoTrust|Let.s Encrypt|ISRG|Root"
+Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root |
+  Where-Object { $_.Subject -match $pat } |
+  ForEach-Object {
+    if ($_.Subject -match "Microsoft") { return }
+    "-----BEGIN CERTIFICATE-----"
+    [Convert]::ToBase64String($_.RawData, "InsertLineBreaks")
+    "-----END CERTIFICATE-----"
+  }
+'
+    powershell -NoProfile -Command "$ps_script" 2>/dev/null > "$out"
+    # 至少要有一个 PEM 块才算成功
+    grep -q "BEGIN CERTIFICATE" "$out" 2>/dev/null
+}
+
+echo -n "  测试 api.github.com ... "
+
+# 第一次: 用 curl 默认 CA
+if RESP=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+           "https://api.github.com" 2>/tmp/_curl_err); then
+    echo -e "${GREEN}ok (HTTP $RESP)${NC}"
+else
+    echo -e "${YELLOW}失败${NC}"
+    ERR=$(cat /tmp/_curl_err 2>/dev/null | head -2)
+    echo "    原因: ${ERR:-未知}"
+
+    # 判断是否证书问题
+    if echo "$ERR" | grep -qiE 'certificate|issuer|SSL|TLS'; then
+        echo ""
+        echo -e "${YELLOW}  疑似 HTTPS 中间人证书问题 (常见于 Steam++/Clash 等)${NC}"
+        echo "  尝试自动导出 Windows 证书库里的相关根证书..."
+
+        # curl 的 --cacert 是"替换"默认 CA bundle, 不是追加。
+        # 所以必须把默认 bundle 与导出的中间人根证书拼接起来,
+        # 否则会丢掉 GitHub 自己的公共根证书。
+        MITM_RAW="$HOME/.jyfree-mitm-raw.pem"
+        CA_FILE="$HOME/.jyfree-ca.pem"
+        DEFAULT_CA=""
+        for c in /mingw64/etc/ssl/certs/ca-bundle.crt \
+                 /usr/ssl/certs/ca-bundle.crt \
+                 /etc/ssl/certs/ca-bundle.crt \
+                 /mingw64/ssl/certs/ca-bundle.crt; do
+            [ -f "$c" ] && DEFAULT_CA="$c" && break
+        done
+
+        if export_mitm_ca "$MITM_RAW"; then
+            N_CA=$(grep -c "BEGIN CERTIFICATE" "$MITM_RAW")
+            echo -e "${GREEN}    已导出 $N_CA 个根证书${NC}"
+
+            if [ -n "$DEFAULT_CA" ]; then
+                cat "$DEFAULT_CA" "$MITM_RAW" > "$CA_FILE"
+                echo -e "${GREEN}    已与默认 bundle 合并 -> $CA_FILE${NC}"
+            else
+                cp "$MITM_RAW" "$CA_FILE"
+                echo -e "${YELLOW}    未找到 curl 默认 CA bundle, 仅用导出证书${NC}"
+            fi
+            rm -f "$MITM_RAW"
+
+            echo -n "  用合并后的证书重试 ... "
+            if RESP=$(curl -sS --max-time 15 --cacert "$CA_FILE" \
+                      -o /dev/null -w '%{http_code}' \
+                      "https://api.github.com" 2>/tmp/_curl_err2); then
+                echo -e "${GREEN}ok (HTTP $RESP)${NC}"
+                CURL_CA_OPT=(--cacert "$CA_FILE")
+            else
+                echo -e "${RED}仍然失败${NC}"
+                cat /tmp/_curl_err2 2>/dev/null | head -2 | sed 's/^/    /'
+                rm -f "$CA_FILE" /tmp/_curl_err /tmp/_curl_err2
+                exit 1
+            fi
+        else
+            echo -e "${YELLOW}    未在证书库里找到匹配的根证书${NC}"
+            echo ""
+            echo -e "${YELLOW}    手动处理办法:${NC}"
+            echo "      1) 若用的是 Clash/Steam++ 等, 先临时关闭其 HTTPS 解密功能"
+            echo "      2) 或设置代理后用 https_proxy 环境变量:"
+            echo "           ${CYAN}https_proxy=http://127.0.0.1:7890 ./scripts/release.sh${NC}"
+            rm -f /tmp/_curl_err
+            exit 1
+        fi
+    else
+        echo ""
+        echo -e "${YELLOW}    不是证书问题, 可能是:${NC}"
+        echo "      - 网络不通 / 需要走代理 (试试 https_proxy=http://127.0.0.1:7890)"
+        echo "      - 系统时间偏差过大 (GitHub API 对时间敏感, 偏差 >5 分钟会失败)"
+        rm -f /tmp/_curl_err
+        exit 1
+    fi
 fi
-echo -e "${GREEN}  ok${NC}"
+
+rm -f /tmp/_curl_err /tmp/_curl_err2
 echo ""
 
 # ---------- 获取 Token ----------
@@ -112,7 +209,7 @@ if [ -z "$TOKEN" ]; then
 fi
 
 # 先验证 token
-AUTH_CHECK=$(curl -sS -o /dev/null -w '%{http_code}' \
+AUTH_CHECK=$(curl -sS "${CURL_CA_OPT[@]}" -o /dev/null -w '%{http_code}' \
              -H "Authorization: Bearer $TOKEN" \
              -H "Accept: application/vnd.github+json" \
              "https://api.github.com/user")
@@ -123,7 +220,7 @@ if [ "$AUTH_CHECK" != "200" ]; then
     exit 1
 fi
 
-LOGIN=$(curl -sS -H "Authorization: Bearer $TOKEN" \
+LOGIN=$(curl -sS "${CURL_CA_OPT[@]}" -H "Authorization: Bearer $TOKEN" \
         -H "Accept: application/vnd.github+json" \
         "https://api.github.com/user" | grep -oP '"login":\s*"\K[^"]+')
 echo -e "${GREEN}  Token 有效 (${LOGIN})${NC}"
@@ -131,7 +228,7 @@ echo ""
 
 # ---------- 检查 Tag 是否已存在 ----------
 echo -e "${CYAN}[检查 Tag]${NC}"
-EXIST=$(curl -sS -o /dev/null -w '%{http_code}' \
+EXIST=$(curl -sS "${CURL_CA_OPT[@]}" -o /dev/null -w '%{http_code}' \
         -H "Authorization: Bearer $TOKEN" \
         "https://api.github.com/repos/${OWNER}/${REPO}/git/ref/tags/${TAG}")
 
@@ -180,7 +277,7 @@ else
     BODY="{\"tag_name\":\"${TAG}\",\"name\":\"jyfree ${VERSION}\",\"prerelease\":${PRERELEASE_JSON},\"draft\":false}"
 fi
 
-RESP=$(curl -sS -X POST \
+RESP=$(curl -sS "${CURL_CA_OPT[@]}" -X POST \
        -H "Authorization: Bearer $TOKEN" \
        -H "Accept: application/vnd.github+json" \
        -H "Content-Type: application/json" \
@@ -209,7 +306,7 @@ for asset in "$TARBALL" "$SHAFILE"; do
     SIZE=$(du -h "$asset" | cut -f1)
     printf "  %-40s %s  " "$NAME" "$SIZE"
 
-    CODE=$(curl -sS -o /tmp/_rel_out -w '%{http_code}' \
+    CODE=$(curl -sS "${CURL_CA_OPT[@]}" -o /tmp/_rel_out -w '%{http_code}' \
            -X POST \
            -H "Authorization: Bearer $TOKEN" \
            -H "Content-Type: application/octet-stream" \
