@@ -78,8 +78,26 @@ PAYLOAD_CFLAGS := $(WARN) $(OPT) $(INC) -fPIC -DJIYU_PAYLOAD_BUILD=1
 # payload (.so) 不能静态链接, 单独给它兼容库
 PAYLOAD_LIBS := $(if $(NEW_GLIBC),,-lrt -ldl -lpthread)
 
-HAVE_X11 := $(shell printf '#include <X11/Xlib.h>\nint main(void){return XOpenDisplay(0)!=0;}\n' \
-             | $(CC) -x c - -lX11 -o /dev/null >/dev/null 2>&1 && echo 1 || echo 0)
+# X11 仅 GUI 版需要。
+#
+# 两种获取方式:
+#   1) 编译机/交叉工具链自带 X11 开发文件  -> 直接用
+#   2) 从 aarch64 目标机导出的 sysroot    -> make gui X11_SYSROOT=~/jyfree-x11-sysroot
+#      见 scripts/x11-sysroot.sh, 在目标机上运行, 不需要 sudo
+#
+# 用"真实链接测试"判断而非 pkg-config: 宿主机有 x11.pc 不代表
+# 交叉工具链有 aarch64 的 X11 库。
+ifdef X11_SYSROOT
+  X11_INC := -I$(X11_SYSROOT)/include
+  X11_LIB := -L$(X11_SYSROOT)/lib -lX11
+  HAVE_X11 := $(shell printf '#include <X11/Xlib.h>\nint main(void){return XOpenDisplay(0)!=0;}\n' \
+               | $(CC) $(X11_INC) -x c - $(X11_LIB) -o /dev/null >/dev/null 2>&1 && echo 1 || echo 0)
+else
+  X11_INC :=
+  X11_LIB := -lX11
+  HAVE_X11 := $(shell printf '#include <X11/Xlib.h>\nint main(void){return XOpenDisplay(0)!=0;}\n' \
+               | $(CC) -x c - -lX11 -o /dev/null >/dev/null 2>&1 && echo 1 || echo 0)
+endif
 
 # payload 专用: 位置无关 + 自己的日志实现 (不能依赖控制器符号)
 
@@ -133,7 +151,7 @@ $(CLI_BIN): $(CLI_OBJS) | $(BINDIR)
 # 链接: GUI (需要 X11 开发库; 缺失时跳过而不是报错)
 ifeq ($(HAVE_X11),1)
 $(GUI_BIN): $(GUI_OBJS) | $(BINDIR)
-	$(CC) $(CLI_LDFLAGS) -o $@ $^ $(CLI_LIBS) -lX11
+	$(CC) $(CLI_LDFLAGS) -o $@ $^ $(CLI_LIBS) $(X11_LIB)
 	@echo "  [OK] $@"
 else
 $(GUI_BIN):
@@ -148,7 +166,7 @@ $(PAYLOAD_SO): $(PAYLOAD_OBJS) | $(BINDIR)
 # 编译: 普通目标文件
 $(OBJDIR)/%.o: src/%.c | $(OBJDIR)
 	@echo "  CC   $<"
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) $(X11_INC) -c $< -o $@
 
 # 编译: payload 位置无关目标文件
 $(OBJDIR)/%.lo: src/%.c | $(OBJDIR)
@@ -238,6 +256,11 @@ help:
 	@echo ""
 	@echo "交叉编译 (在 x86 上构建 aarch64 版):"
 	@echo "  make ARCH=aarch64 CROSS=aarch64-linux-gnu-"
+	@echo ""
+	@echo "图形界面版 (GUI) 需要 aarch64 的 X11 开发文件:"
+	@echo "  在目标机上运行 scripts/x11-sysroot.sh 打包 (不需要 sudo)"
+	@echo "  然后: make gui ARCH=aarch64 CROSS=aarch64-linux-gnu- \\"
+	@echo "            X11_SYSROOT=\$HOME/jyfree-x11-sysroot"
 	@echo ""
 	@echo "兼容性开关:"
 	@echo "  STATIC=0      命令行版改为动态链接 (默认 1, 静态更通用)"
