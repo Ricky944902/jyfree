@@ -200,18 +200,42 @@ JiYuTrainer/
 
 ## 依赖
 
-| 依赖 | 用途 | 必需 |
-|---|---|---|
-| `gcc` ≥ 6, `make` | 编译 | ✅ |
-| `libx11-dev` | `jyfree-gui` 图形界面版 | 仅 GUI |
-| `libpthread` `libdl` `librt` | ptrace / dlopen / shm_open | ✅ |
-| aarch64 交叉工具链 | 在 x86 上编译 aarch64 版 | 交叉时 |
+### 必需（系统自带）
+
+| 依赖 | 说明 |
+|---|---|
+| `gcc` ≥ 6, `make` | 编译 |
+| `libc.so.6` | **唯一运行时库依赖**，任何 Linux 都有 |
+
+**编译期不需要安装任何开发库。** `pthread` / `dlopen` / `shm_open` / `ptrace`
+在 glibc ≥ 2.34 起全部在 `libc` 内，`libpthread`/`libdl`/`librt` 已成空桩。
 
 ```bash
 # UOS / Debian 系
-sudo apt install build-essential libx11-dev
-sudo apt install gcc-aarch64-linux-gnu      # 交叉编译时
+sudo apt install build-essential
+
+# Fedora / RHEL
+sudo dnf install gcc make
 ```
+
+### 可选（仅图形界面版）
+
+```bash
+sudo apt install libx11-dev        # 只有 jyfree-gui 需要
+```
+
+**没装也能编译** —— `make` 自动探测并跳过 GUI，命令行版功能完整。
+
+```bash
+ldd bin/jyfree
+#   linux-vdso.so.1
+#   libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+#   /lib64/ld-linux-x86-64.so.2      ← 零外部依赖
+```
+
+老系统（glibc < 2.34）用 `make OLD_GLIBC=1`。
+
+详见 [`docs/02-编译指南.md`](docs/02-编译指南.md) · [English](docs/02-build-guide.en.md)
 
 ---
 

@@ -209,18 +209,44 @@ JiYuTrainer/
 
 ## Dependencies
 
-| Dependency | Purpose | Required |
-|---|---|---|
-| `gcc` ≥ 6, `make` | build | ✅ |
-| `libx11-dev` | `jyfree-gui` | GUI only |
-| `libpthread` `libdl` `librt` | ptrace / dlopen / shm_open | ✅ |
-| aarch64 cross toolchain | building aarch64 from x86 | when cross-compiling |
+### Required (all provided by the base system)
+
+| Dependency | Purpose |
+|---|---|
+| `gcc` ≥ 6, `make` | build |
+| `libc.so.6` | **the only runtime library dependency** — present on every Linux |
+
+**No development libraries are needed at build time.** Since glibc ≥ 2.34,
+`pthread` / `dlopen` / `shm_open` / `ptrace` all live in `libc`; the separate
+`libpthread` / `libdl` / `librt` files are now empty stubs.
 
 ```bash
 # UOS / Debian based
-sudo apt install build-essential libx11-dev
-sudo apt install gcc-aarch64-linux-gnu      # for cross builds
+sudo apt install build-essential
+
+# Fedora / RHEL
+sudo dnf install gcc make
 ```
+
+### Optional (graphical build only)
+
+```bash
+sudo apt install libx11-dev        # needed only by jyfree-gui
+```
+
+**The build still succeeds without it** — `make` auto-detects X11 and skips
+the GUI target; the CLI is fully functional.
+
+```bash
+ldd bin/jyfree
+#   linux-vdso.so.1
+#   libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+#   /lib64/ld-linux-x86-64.so.2      ← zero external dependencies
+```
+
+Legacy systems (glibc < 2.34): use `make OLD_GLIBC=1`.
+
+Details: [`docs/02-build-guide.en.md`](docs/02-build-guide.en.md) · [中文](docs/02-编译指南.md)
 
 ---
 

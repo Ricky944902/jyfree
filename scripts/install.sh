@@ -54,27 +54,37 @@ fi
 
 echo -e "${CYAN}[2/5] 检查依赖${NC}"
 MISSING=""
-for lib in libX11 libpthread libdl librt; do
-    :
-done
+
+# 必需: make + gcc
+command -v make >/dev/null 2>&1 && echo -e "${GREEN}  ok${NC} make" || MISSING="$MISSING make"
+command -v gcc >/dev/null 2>&1 && echo -e "${GREEN}  ok${NC} gcc ($(gcc -dumpversion))" || MISSING="$MISSING gcc"
+
+# libc 提供 pthread/dlopen/shm_open/ptrace
+GLIBC=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$')
+echo -e "${GREEN}  ok${NC} glibc ${GLIBC:-?} (pthread/dl/rt 已并入 libc)"
+
+# 可选: X11 (只有图形界面版需要)
+HAVE_X11=0
+if pkg-config --exists x11 2>/dev/null || echo '#include <X11/Xlib.h>' | gcc -E - >/dev/null 2>&1; then
+    HAVE_X11=1
+    echo -e "${GREEN}  ok${NC} X11 开发库"
+else
+    echo -e "${YELLOW}  --${NC} 无 X11 开发库 (图形界面版将跳过, 可后续安装)"
+fi
+
+if [ -n "$MISSING" ]; then
+    echo -e "${RED}  缺少必需工具: $MISSING${NC}"
+    echo -e "  ${CYAN}Debian/UOS: sudo apt install build-essential${NC}"
+    exit 1
+fi
+
+echo -e "  ${CYAN}结论: 命令行版零外部依赖 (仅用 libc)${NC}"
 
 # 检查极域安装 (可选)
 if [ -d "/opt/mythware/classroom-management" ]; then
-    echo -e "${GREEN}  发现极域安装${NC}"
-    if [ -f "/opt/mythware/classroom-management/Student" ]; then
-        echo -e "${GREEN}    Student 主程序存在${NC}"
-    fi
+    echo -e "  ${GREEN}  ok${NC} 检测到极域安装"
 else
-    echo -e "${YELLOW}  未发现极域安装 (不影响本工具编译)${NC}"
-fi
-
-# 检查 X11
-if command -v pkg-config >/dev/null 2>&1; then
-    if pkg-config --exists x11 2>/dev/null; then
-        echo -e "${GREEN}  X11 开发库就绪${NC}"
-    else
-        MISSING="$MISSING libx11-dev"
-    fi
+    echo -e "  ${YELLOW}  --${NC} 未检测到极域安装 (不影响本工具编译)"
 fi
 
 # ==================== 编译 ====================
@@ -82,9 +92,7 @@ echo -e "${CYAN}[3/5] 编译${NC}"
 if command -v make >/dev/null 2>&1; then
     make clean >/dev/null 2>&1 || true
     make
-    make gui || {
-        echo -e "${YELLOW}  GUI 构建失败 (可能缺少 X11 头文件)${NC}"
-    }
+    # make 内部已按 X11 可用性自动决定是否构建 GUI
 else
     echo -e "${RED}  未找到 make, 请手动编译${NC}"
     exit 1
@@ -95,17 +103,17 @@ echo -e "${CYAN}[4/5] 安装到 $PREFIX${NC}"
 mkdir -p "$PREFIX/bin"
 mkdir -p "$PREFIX/lib"
 
-install -m 755 jyfree "$PREFIX/bin/"
+install -m 755 bin/jyfree "$PREFIX/bin/"
 echo -e "${GREEN}  + $PREFIX/bin/jyfree${NC}"
 
 # payload 必须与 jyfree 同目录 (payload_path() 优先在 exe 同目录找)
-if [ -f libjyfree.so ]; then
-    install -m 755 libjyfree.so "$PREFIX/bin/"
+if [ -f bin/libjyfree.so ]; then
+    install -m 755 bin/libjyfree.so "$PREFIX/bin/"
     echo -e "${GREEN}  + $PREFIX/bin/libjyfree.so${NC}"
 fi
 
-if [ -f jyfree-gui ]; then
-    install -m 755 jyfree-gui "$PREFIX/bin/"
+if [ -f bin/jyfree-gui ]; then
+    install -m 755 bin/jyfree-gui "$PREFIX/bin/"
     echo -e "${GREEN}  + $PREFIX/bin/jyfree-gui${NC}"
 fi
 

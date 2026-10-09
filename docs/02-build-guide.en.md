@@ -4,33 +4,71 @@
 
 ## 1. Dependencies
 
-| Dependency | Purpose | Required |
-|---|---|---|
-| `gcc` ≥ 6 / `make` | build | ✅ |
-| `libx11-dev` | the `jyfree-gui` graphical build | GUI only |
-| `libpthread` `libdl` `librt` | ptrace / dlopen / shm_open | ✅ |
-| aarch64 cross toolchain | building aarch64 from x86 | when cross-compiling |
+### Required (all provided by the base system)
 
-### Installing dependencies
+| Dependency | Purpose |
+|---|---|
+| `gcc` ≥ 6 | compiler |
+| `make` | build |
+| `libc.so.6` | **the only runtime library dependency** — present on every Linux |
 
-**UOS / Debian based:**
+**No development libraries are needed at build time.** Since glibc ≥ 2.34,
+`pthread` / `dlopen` / `shm_open` / `ptrace` / `process_vm_readv` all live in
+`libc`; the separate `libpthread` / `libdl` / `librt` files are now empty stub
+libraries.
 
 ```bash
-sudo apt update
-sudo apt install build-essential libx11-dev
+# Debian / UOS
+sudo apt install build-essential
+
+# Fedora / RHEL
+sudo dnf install gcc make
 ```
 
-**Cross toolchain:**
+### Optional (graphical build only)
+
+| Dependency | Purpose |
+|---|---|
+| `libx11-dev` | needed only by `jyfree-gui` |
+
+```bash
+sudo apt install libx11-dev        # Debian / UOS
+sudo dnf install libX11-devel      # Fedora / RHEL
+```
+
+**The build still succeeds without it** — `make` auto-detects X11 and skips the
+GUI target, producing only the CLI and the payload. The CLI is fully
+functional; the GUI is just a convenience shell around it.
+
+### Cross toolchain (optional)
 
 ```bash
 sudo apt install gcc-aarch64-linux-gnu
 ```
 
-**Fedora / RHEL:**
+### Verify
 
 ```bash
-sudo dnf install gcc make libX11-devel
-sudo dnf install gcc-aarch64-linux-gnu
+./scripts/build.sh --check
+```
+
+Sample output:
+
+```
+ok  make
+ok  gcc (13)
+ok  glibc 2.39 (pthread/dl/rt merged into libc)
+ok  X11 dev library (GUI build available)
+
+Verdict: the CLI needs only libc (system-provided); no extra packages required
+```
+
+### Legacy systems (glibc < 2.34)
+
+If the target has glibc older than 2.34, link the three stubs explicitly:
+
+```bash
+make OLD_GLIBC=1
 ```
 
 ---

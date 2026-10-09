@@ -47,7 +47,6 @@ check_deps() {
     fi
     
     if ! command -v gcc >/dev/null 2>&1; then
-        # 可能是交叉编译场景
         if [ -n "$CROSS_PREFIX" ] && command -v "${CROSS_PREFIX}gcc" >/dev/null 2>&1; then
             echo -e "  ${GREEN}ok${NC} ${CROSS_PREFIX}gcc"
         else
@@ -58,24 +57,50 @@ check_deps() {
         echo -e "  ${GREEN}ok${NC} gcc ($(gcc -dumpversion))"
     fi
     
-    # X11 头文件 (只有 GUI 需要)
-    if [ -f /usr/include/X11/Xlib.h ] || [ -f /usr/include/x86_64-linux-gnu/X11/Xlib.h ] \
-       || [ -f /usr/include/aarch64-linux-gnu/X11/Xlib.h ]; then
-        echo -e "  ${GREEN}ok${NC} X11 头文件"
-    else
-        echo -e "  ${YELLOW}!!${NC} X11 头文件缺失 (GUI 版将无法编译)"
-        echo -e "     Debian/UOS: ${CYAN}sudo apt install libx11-dev${NC}"
+    # X11 开发库: 可选, 只影响图形界面版
+    local have_x11=0
+    if pkg-config --exists x11 2>/dev/null; then
+        have_x11=1
+    elif echo '#include <X11/Xlib.h>' | gcc -E - >/dev/null 2>&1; then
+        have_x11=1
     fi
     
-    # payload 需要的
-    echo -e "  ${GREEN}ok${NC} pthread / dl / rt"
+    if [ "$have_x11" = "1" ]; then
+        echo -e "  ${GREEN}ok${NC} X11 开发库 (图形界面版可构建)"
+    else
+        echo -e "  ${YELLOW}--${NC} 无 X11 开发库, 将跳过图形界面版"
+        echo -e "     ${CYAN}Debian/UOS: sudo apt install libx11-dev${NC}"
+        echo -e "     ${CYAN}Fedora/RHEL: sudo dnf install libX11-devel${NC}"
+    fi
+    
+    # libc 提供的能力: pthread / dlopen / shm_open / ptrace
+    # glibc >= 2.34 起这些都在 libc 里, 不需要单独的库
+    local glibc_ver
+    glibc_ver=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$')
+    if [ -n "$glibc_ver" ]; then
+        local major=$(echo "$glibc_ver" | cut -d. -f1)
+        local minor=$(echo "$glibc_ver" | cut -d. -f2)
+        if [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 34 ]; }; then
+            echo -e "  ${GREEN}ok${NC} glibc $glibc_ver (pthread/dl/rt 已并入 libc)"
+        else
+            echo -e "  ${YELLOW}!!${NC} glibc $glibc_ver 较旧, 需要 -lpthread -ldl -lrt"
+            echo -e "     请用: ${CYAN}make OLD_GLIBC=1${NC}"
+        fi
+    fi
     
     if [ "$missing" = "1" ]; then
         echo -e ""
-        echo -e "${RED}依赖缺失, 请先安装:${NC}"
-        echo -e "  Debian/UOS: ${CYAN}sudo apt install build-essential libx11-dev${NC}"
+        echo -e "${RED}必需依赖缺失${NC}"
+        echo -e "  Debian/UOS: ${CYAN}sudo apt install build-essential${NC}"
         exit 1
     fi
+    
+    echo -e ""
+    echo -e "  ${CYAN}结论: 命令行版只需要 libc (系统自带), 无需安装任何额外库${NC}"
+    if [ "$have_x11" != "1" ]; then
+        echo -e "        图形界面版需要 X11 开发库, 属于可选"
+    fi
+    echo -e ""
 }
 
 check_arch() {

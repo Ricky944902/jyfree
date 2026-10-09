@@ -34,9 +34,22 @@ INC  := -Iinclude
 
 CFLAGS  := $(WARN) $(OPT) $(INC)
 LDFLAGS :=
-LIBS    := -lpthread -ldl -lrt
 
-# payload 需要位置无关 + 自己的日志实现 (不能依赖控制器符号)
+# glibc >= 2.34 起 pthread / dl / rt 已并入 libc, 那三个 .so 是空桩库,
+# 不需要链接。CLI 版因此只依赖 libc.so.6 (系统自带, 无需安装任何东西)。
+# 若目标是 glibc < 2.34 的老系统, 用: make OLD_GLIBC=1
+ifdef OLD_GLIBC
+LIBS := -lpthread -ldl -lrt
+else
+LIBS :=
+endif
+
+# X11 仅 GUI 版需要; 由 scripts/build.sh 自动探测是否存在。
+# 未安装时 make 只构建 CLI 与 payload, 不会失败。
+HAVE_X11 := $(shell pkg-config --exists x11 2>/dev/null && echo 1 || \
+             (echo '#include <X11/Xlib.h>' | $(CC) -E - >/dev/null 2>&1 && echo 1) || echo 0)
+
+# payload 专用: 位置无关 + 自己的日志实现 (不能依赖控制器符号)
 PAYLOAD_CFLAGS := $(WARN) $(OPT) $(INC) -fPIC -DJIYU_PAYLOAD_BUILD=1
 
 # ---------- 目录 ----------
@@ -64,21 +77,37 @@ PAYLOAD_OBJS := $(patsubst src/%.c,$(OBJDIR)/%.lo,$(PAYLOAD_SRCS))
 # ---------- 规则 ----------
 .PHONY: all cli gui payload debug install uninstall clean distclean arch-check help
 
-all: cli gui payload
+# 默认目标: CLI + payload 始终构建, GUI 仅在有 X11 时构建
+all: cli payload $(if $(filter 1,$(HAVE_X11)),gui)
 
 cli:     $(CLI_BIN)
-gui:     $(GUI_BIN)
 payload: $(PAYLOAD_SO)
+
+ifeq ($(HAVE_X11),1)
+gui: $(GUI_BIN)
+else
+gui:
+	@echo ""
+	@echo "  [跳过] 未检测到 X11 开发库, 不构建图形界面版"
+	@echo "         Debian/UOS: sudo apt install libx11-dev"
+	@echo "         Fedora/RHEL: sudo dnf install libX11-devel"
+	@echo ""
+endif
 
 # 链接: CLI
 $(CLI_BIN): $(CLI_OBJS) | $(BINDIR)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 	@echo "  [OK] $@  ($$($(CC) -dumpversion) $(ARCH))"
 
-# 链接: GUI (需要 X11 开发库)
+# 链接: GUI (需要 X11 开发库; 缺失时跳过而不是报错)
+ifeq ($(HAVE_X11),1)
 $(GUI_BIN): $(GUI_OBJS) | $(BINDIR)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS) -lX11
 	@echo "  [OK] $@"
+else
+$(GUI_BIN):
+	@echo "  [跳过] 需要 X11 开发库 (libx11-dev)"
+endif
 
 # 链接: payload (注入到 Student 内的共享库)
 $(PAYLOAD_SO): $(PAYLOAD_OBJS) | $(BINDIR)
@@ -112,13 +141,16 @@ BINDEST := $(PREFIX)/bin
 install: all
 	@mkdir -p $(DESTDIR)$(BINDEST)
 	install -m 755 $(CLI_BIN)    $(DESTDIR)$(BINDEST)/
-	install -m 755 $(GUI_BIN)    $(DESTDIR)$(BINDEST)/
 	install -m 755 $(PAYLOAD_SO) $(DESTDIR)$(BINDEST)/
+	@if [ -f $(GUI_BIN) ]; then \
+	    install -m 755 $(GUI_BIN) $(DESTDIR)$(BINDEST)/; \
+	fi
 	@echo ""
 	@echo "已安装到 $(DESTDIR)$(BINDEST):"
-	@echo "  jyfree         命令行版"
-	@echo "  jyfree-gui     图形界面版"
+	@echo "  jyfree         命令行版 (仅依赖 libc)"
 	@echo "  libjyfree.so   payload (必须与 jyfree 同目录)"
+	@[ -f $(GUI_BIN) ] && echo "  jyfree-gui     图形界面版 (需要 X11)" || \
+	    echo "  (未安装 jyfree-gui: 本机没有 X11 开发库)"
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDEST)/jyfree \
