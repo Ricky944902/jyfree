@@ -116,24 +116,89 @@ Intermediates go to `obj/`.
 
 ## 4. Cross-Compiling (building aarch64 on x86)
 
-**Via script**
-
 ```bash
+# install the toolchain
+sudo apt install gcc-aarch64-linux-gnu
+
+# Option 1: script
 ./scripts/build.sh --cross
-./scripts/build.sh --cross aarch64-none-linux-gnu-
-```
 
-**Via Makefile**
-
-```bash
+# Option 2: Makefile
 make ARCH=aarch64 CROSS=aarch64-linux-gnu-
 ```
 
 Copy the artifacts to the target:
 
 ```bash
-scp bin/* user@target:/usr/local/bin/
+scp bin/jyfree bin/libjyfree.so user@target:/home/user/
 ```
+
+On the target machine, run directly — nothing to install:
+
+```bash
+chmod +x ~/jyfree ~/libjyfree.so
+~/jyfree --status
+```
+
+> `libjyfree.so` must sit in the same directory as `jyfree`
+> (`payload_path()` starts searching next to `/proc/self/exe`).
+
+### glibc compatibility in cross builds (important)
+
+Cross builds have a trap: **the build machine's glibc is newer than the
+target's**. Building on Ubuntu 24.04 (glibc 2.39) for UOS V20 (glibc 2.31),
+for example.
+
+glibc 2.34 merged the `pthread` / `dl` / `rt` symbols into libc and bumped
+their default version to `GLIBC_2.34`. A binary referencing 2.34 fails
+outright on older systems:
+
+```
+/lib/ld-linux-aarch64.so.1: version `GLIBC_2.34' not found
+```
+
+How this project handles it:
+
+| Artifact | Approach | Result |
+|---|---|---|
+| `jyfree` | `STATIC=1` (default) static linking | **zero glibc dependency** — runs on any aarch64 Linux |
+| `libjyfree.so` | `include/glibc_compat.h` binds dl/pthread/shm symbols to `GLIBC_2.17` via `.symver` | requires only `GLIBC_2.17` |
+
+`GLIBC_2.17` is the **baseline version for the aarch64 architecture** — every
+aarch64 glibc provides it.
+
+Verify:
+
+```bash
+$ make ARCH=aarch64 CROSS=aarch64-linux-gnu-
+$ aarch64-linux-gnu-objdump -T bin/libjyfree.so | grep -oE 'GLIBC_[0-9.]+' | sort -u
+GLIBC_2.17
+
+$ file bin/jyfree | grep -o 'statically linked'
+statically linked
+```
+
+### X11 in cross builds
+
+`make` detects X11 availability with a **real link test**, not `pkg-config`:
+
+```makefile
+HAVE_X11 := $(shell printf '#include <X11/Xlib.h>...' | $(CC) -x c - -lX11 ...)
+```
+
+because the host having `x11.pc` does not mean the cross toolchain has
+aarch64 X11 libraries.
+
+If you want the GUI build, install the multiarch package:
+
+```bash
+sudo dpkg --add-architecture arm64
+sudo apt update
+sudo apt install libx11-dev:arm64
+```
+
+Skip it and the GUI target is dropped automatically; the CLI is fully
+functional on its own.
 
 ---
 

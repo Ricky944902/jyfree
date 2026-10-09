@@ -30,6 +30,7 @@
 #include <sys/user.h>
 #include <sys/stat.h>
 #include "jiyu.h"
+#include "elf_sym.h"
 
 // ==================== 内部状态 ====================
 static int g_attached_pid = -1;
@@ -46,12 +47,17 @@ static uintptr_t g_payload_handle = 0;   // payload 的 dlopen 句柄 (uninject 
 // ==================== 寄存器访问抽象 ====================
 // 目标平台是 aarch64 (Student 所在架构)。控制器的编译架构可能不同,
 // 因此用条件编译隔离寄存器布局差异。
+//
+// 注意: aarch64 的 sys/user.h 里 struct user_regs_struct 定义为
+//       unsigned long long regs[31]; unsigned long long sp, pc, pstate;
+//       部分 glibc 版本没有命名的 x0..x30 字段, 所以统一用 regs[] 下标,
+//       这在任何版本上都成立。
 #if defined(__aarch64__)
   #define REG_PC      pc
   #define REG_SP      sp
   #define REG_X(n)    regs[n]
   #define REG_RET     regs[0]
-  #define REG_LR      x30
+  #define REG_LR      regs[30]
   #define ARCH_NAME   "aarch64"
 #elif defined(__x86_64__)
   #define REG_PC      rip
@@ -61,7 +67,7 @@ static uintptr_t g_payload_handle = 0;   // payload 的 dlopen 句柄 (uninject 
   #define REG_LR      rip
   #define ARCH_NAME   "x86_64"
 #else
-  #error "需要 aarch64 或 x86_64 架构"
+#error "需要 aarch64 或 x86_64 架构"
 #endif
 
 // ==================== 内部辅助 ====================
@@ -386,23 +392,6 @@ int inject_call(int pid, uintptr_t func, int argc, uintptr_t *args, uintptr_t *r
 }
 
 // ==================== 远程符号解析 ====================
-struct find_mod_ctx {
-    const char *needle;
-    uintptr_t   base;
-};
-
-static int find_mod_cb(struct dl_phdr_info *info, size_t sz, void *data) {
-    (void)sz;
-    struct find_mod_ctx *ctx = data;
-    const char *name = info->dlpi_name ? info->dlpi_name : "";
-    
-    if (strstr(name, ctx->needle)) {
-        ctx->base = (uintptr_t)info->dlpi_addr;
-        return 1;
-    }
-    return 0;
-}
-
 // 取目标进程中某库的加载基址
 static uintptr_t remote_module_base(int pid, const char *needle) {
     // 目标进程的 maps
@@ -431,50 +420,50 @@ static uintptr_t remote_module_base(int pid, const char *needle) {
     return found ? lo : 0;
 }
 
+// 解析目标进程中某库某符号的运行地址
+//
+// 不用 dlopen/dlsym 的原因:
+//   1. 命令行版默认静态链接 (STATIC=1), 静态二进制里 dlopen 不可用
+//   2. 交叉编译时控制器所在机器未必有目标架构的库文件
+//   3. 直接解析 ELF 得到的偏移就是真实加载偏移, 更准确
 uintptr_t inject_resolve_remote(int pid, const char *lib, const char *sym) {
-    // 远程库基址
+    // 目标进程里该库的加载基址
     uintptr_t rbase = remote_module_base(pid, lib);
     if (!rbase) {
         JIYU_LOG_ERROR("目标进程未加载 %s", lib);
         return 0;
     }
     
-    // 本地同版本库基址 (用于算符号偏移)
-    char full[512];
-    snprintf(full, sizeof(full), "%s%s", JY_INSTALL_DIR, lib);
+    // 从磁盘上的 ELF 文件取符号偏移
+    static const char *multiarch[] = {
+        "/lib/aarch64-linux-gnu", "/usr/lib/aarch64-linux-gnu",
+        "/lib/x86_64-linux-gnu",  "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib64", "/lib64"
+    };
     
-    void *h = dlopen(full, RTLD_NOW);
-    if (!h) h = dlopen(lib, RTLD_NOW);
-    if (!h) {
-        JIYU_LOG_ERROR("本地无法加载 %s: %s", lib, dlerror());
+    char paths[16][512];
+    int np = elf_candidate_paths(lib, jiyu_get_install_dir(),
+                                 multiarch,
+                                 (int)(sizeof(multiarch)/sizeof(multiarch[0])),
+                                 paths, 16);
+    
+    char found_path[512] = {0};
+    int off = elf_find_symbol((const char *const *)paths, np, sym,
+                              found_path, sizeof(found_path));
+    
+    if (off <= 0) {
+        JIYU_LOG_ERROR("本地 ELF 中未找到符号 %s::%s", lib, sym);
+        JIYU_LOG_ERROR("  尝试过的路径:");
+        for (int i = 0; i < np && i < 5; i++) {
+            JIYU_LOG_ERROR("    %s", paths[i]);
+        }
         return 0;
     }
     
-    void *s = dlsym(h, sym);
-    if (!s) {
-        dlclose(h);
-        JIYU_LOG_ERROR("本地符号 %s::%s 未找到", lib, sym);
-        return 0;
-    }
+    uintptr_t remote = rbase + (uintptr_t)off;
     
-    // 用 dl_iterate_phdr 找本地该库的基址
-    struct find_mod_ctx ctx = { .needle = lib, .base = 0 };
-    dl_iterate_phdr(find_mod_cb, &ctx);
-    
-    if (!ctx.base) {
-        dlclose(h);
-        JIYU_LOG_ERROR("无法确定本地 %s 基址", lib);
-        return 0;
-    }
-    
-    uintptr_t offset = (uintptr_t)s - ctx.base;
-    uintptr_t remote = rbase + offset;
-    
-    JIYU_LOG_VERBOSE("符号解析 %s::%s: offset=0x%lx -> remote=0x%lx",
-                     lib, sym, (unsigned long)offset, (unsigned long)remote);
-    
-    // 不 dlclose: 卸载会改变基址, 且 Student 与本进程 ASLR 布局不同,
-    // 卸载后偏移失效。故意泄漏句柄以保证后续解析一致。
+    JIYU_LOG_VERBOSE("符号解析 %s::%s: %s offset=0x%x -> remote=0x%lx",
+                     lib, sym, found_path, off, (unsigned long)remote);
     return remote;
 }
 

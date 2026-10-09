@@ -15,6 +15,10 @@
 #define JIYU_PAYLOAD_BUILD 1
 #include "payload_state.h"
 
+// 把 dl/pthread/shm 符号绑定到 GLIBC_2.2.5, 使 payload 能在
+// 旧 glibc (如 UOS V20 的 2.31) 上加载, 而非只支持 2.34+
+#include "glibc_compat.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
