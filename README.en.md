@@ -38,7 +38,6 @@ all in real time.
 ---
 
 > # ⚠️ NOT VERIFIED ON REAL HARDWARE — do not use this directly
-> # We will do this in 1-2 weeks
 > **This project has never been run on an actual aarch64 machine with Mythware
 > installed.**
 >
