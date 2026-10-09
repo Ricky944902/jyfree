@@ -61,8 +61,7 @@ cat /tmp/jyfree-payload.log # payload-internal log
 | Fix a failed injection | [04 Troubleshooting](04-troubleshooting.en.md) §2, §3 |
 | Learn why the capture counter stays 0 | [04 Troubleshooting](04-troubleshooting.en.md) §6 |
 | Support a different Mythware version | [04 Troubleshooting](04-troubleshooting.en.md) §3.3 |
-| **Read before pushing to GitHub** | [05 Publishing Guide](05-github-upload.en.md) |
-| What must never be committed | [05 Publishing Guide](05-github-upload.en.md) §4 |
+
 
 ---
 
